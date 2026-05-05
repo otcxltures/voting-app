@@ -1,0 +1,31 @@
+{
+  "options": [
+    {
+      "id": "1",
+      "text": "Keith Mutugi",
+      "votes": 0
+    },
+    {
+      "id": "2",
+      "text": "Enoch",
+      "votes": 0
+    },
+    {
+      "id": "3",
+      "text": "Ric Musyoki",
+      "votes": 0
+    },
+    {
+      "id": "tXCkIN5u9K4",
+      "text": "glenn",
+      "votes": 0
+    },
+    {
+      "id": "zqilScbZ2qo",
+      "text": "elias",
+      "votes": 0
+    }
+  ],
+  "userVotes": [],
+  "$schema": "./node_modules/json-server/schema.json"
+}
