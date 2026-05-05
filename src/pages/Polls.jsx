@@ -3,9 +3,17 @@ import { useAuth } from '../context/AuthContext';
 import PollForm from '../components/PollForm';
 import PollList from '../components/PollList';
 import { toast } from 'react-toastify';
-import axios from 'axios';
-
-const API_URL = import.meta.env.VITE_JSON_SERVER_URL || 'http://localhost:3001';
+import {
+  collection,
+  addDoc,
+  getDocs,
+  doc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where
+} from 'firebase/firestore';
+import { db } from '../firebase/config';
 
 const Polls = () => {
   const { user } = useAuth();
@@ -15,56 +23,60 @@ const Polls = () => {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    if (!user?.uid) return;
+
     const loadData = async () => {
       try {
         setIsLoading(true);
         setHasVoted(false);
         setUserVote(null);
-        
-        const optionsResponse = await axios.get(`${API_URL}/options`);
-        setOptions(optionsResponse.data || []);
-        
-        try {
-          const votesResponse = await axios.get(`${API_URL}/userVotes`);
-          const votes = votesResponse.data || [];
-          const userVoteRecord = votes.find(
-            vote => vote.userId === user.uid
-          );
-          
-          if (userVoteRecord) {
-            setHasVoted(true);
-            setUserVote(userVoteRecord.optionId);
-          }
-        } catch (voteError) {
-          console.log('No userVotes found:', voteError.message);
+
+        // Load options
+        const optionsQuery = collection(db, 'options');
+        const optionsSnapshot = await getDocs(optionsQuery);
+        const optionsData = optionsSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setOptions(optionsData);
+
+        // Check if user has voted
+        const votesQuery = query(
+          collection(db, 'userVotes'),
+          where('userId', '==', user.uid)
+        );
+        const votesSnapshot = await getDocs(votesQuery);
+        if (!votesSnapshot.empty) {
+          const userVoteRecord = votesSnapshot.docs[0].data();
+          setHasVoted(true);
+          setUserVote(userVoteRecord.optionId);
         }
       } catch (error) {
-        console.error('Error loading options:', error);
-        toast.error('Failed to load poll data. Make sure JSON Server is running on port 3001');
+        console.error('Error loading poll data:', error);
+        toast.error('Failed to load poll data');
       } finally {
         setIsLoading(false);
       }
     };
-    
-    if (user && user.uid) {
-      loadData();
-    }
+
+    loadData();
   }, [user]);
 
   const handleAddOption = async (text) => {
     const newOption = {
-      id: Date.now().toString(),
       text,
-      votes: 0
+      votes: 0,
+      createdAt: new Date().toISOString(),
+      createdBy: user.uid
     };
 
     try {
-      await axios.post(`${API_URL}/options`, newOption);
-      setOptions((prev) => [...prev, newOption]);
+      const docRef = await addDoc(collection(db, 'options'), newOption);
+      setOptions((prev) => [...prev, { id: docRef.id, ...newOption }]);
       toast.success('Option added successfully!');
     } catch (error) {
       console.error('Error adding option:', error);
-      toast.error('Failed to add option. Is JSON Server running?');
+      toast.error('Failed to add option');
     }
   };
 
@@ -82,20 +94,21 @@ const Polls = () => {
       }
 
       const updatedVotes = option.votes + 1;
-      
-      await axios.patch(`${API_URL}/options/${optionId}`, {
+
+      // Update option votes
+      await updateDoc(doc(db, 'options', optionId), {
         votes: updatedVotes
       });
 
-      await axios.post(`${API_URL}/userVotes`, {
-        id: Date.now().toString(),
+      // Record user vote
+      await addDoc(collection(db, 'userVotes'), {
         userId: user.uid,
         optionId: optionId,
         votedAt: new Date().toISOString()
       });
 
       setOptions((prev) =>
-        prev.map((opt) => 
+        prev.map((opt) =>
           opt.id === optionId ? { ...opt, votes: updatedVotes } : opt
         )
       );
@@ -105,7 +118,7 @@ const Polls = () => {
       toast.success('Vote recorded successfully!');
     } catch (error) {
       console.error('Error voting:', error);
-      toast.error('Failed to record vote. Check console for details.');
+      toast.error('Failed to record vote');
     }
   }, [options, hasVoted, user]);
 
@@ -115,17 +128,18 @@ const Polls = () => {
     }
 
     try {
-      await axios.delete(`${API_URL}/options/${optionId}`);
+      await deleteDoc(doc(db, 'options', optionId));
 
-      try {
-        const votesResponse = await axios.get(`${API_URL}/userVotes?optionId=${optionId}`);
-        const deletePromises = votesResponse.data.map((entry) =>
-          axios.delete(`${API_URL}/userVotes/${entry.id}`)
-        );
-        await Promise.all(deletePromises);
-      } catch (voteError) {
-        console.log('No votes to remove for deleted option:', voteError.message);
-      }
+      // Remove associated votes
+      const votesQuery = query(
+        collection(db, 'userVotes'),
+        where('optionId', '==', optionId)
+      );
+      const votesSnapshot = await getDocs(votesQuery);
+      const deletePromises = votesSnapshot.docs.map((voteDoc) =>
+        deleteDoc(doc(db, 'userVotes', voteDoc.id))
+      );
+      await Promise.all(deletePromises);
 
       setOptions((prev) => prev.filter((opt) => opt.id !== optionId));
       if (userVote === optionId) {
@@ -135,7 +149,7 @@ const Polls = () => {
       toast.success('Candidate deleted successfully!');
     } catch (error) {
       console.error('Error deleting candidate:', error);
-      toast.error('Failed to delete candidate. Check console for details.');
+      toast.error('Failed to delete candidate');
     }
   };
 
@@ -145,21 +159,19 @@ const Polls = () => {
     }
 
     try {
+      // Reset all option votes
       const resetPromises = options.map((opt) =>
-        axios.patch(`${API_URL}/options/${opt.id}`, { votes: 0 })
+        updateDoc(doc(db, 'options', opt.id), { votes: 0 })
       );
       await Promise.all(resetPromises);
 
-      try {
-        const votesResponse = await axios.get(`${API_URL}/userVotes`);
-        const votes = votesResponse.data || [];
-        const deletePromises = votes.map((vote) =>
-          axios.delete(`${API_URL}/userVotes/${vote.id}`)
-        );
-        await Promise.all(deletePromises);
-      } catch (e) {
-        console.log('No userVotes to clear');
-      }
+      // Delete all user votes
+      const votesQuery = collection(db, 'userVotes');
+      const votesSnapshot = await getDocs(votesQuery);
+      const deletePromises = votesSnapshot.docs.map((voteDoc) =>
+        deleteDoc(doc(db, 'userVotes', voteDoc.id))
+      );
+      await Promise.all(deletePromises);
 
       setOptions((prev) => prev.map((opt) => ({ ...opt, votes: 0 })));
       setHasVoted(false);
@@ -167,7 +179,7 @@ const Polls = () => {
       toast.success('All votes have been reset!');
     } catch (error) {
       console.error('Error resetting votes:', error);
-      toast.error('Failed to reset votes. Check console for details.');
+      toast.error('Failed to reset votes');
     }
   };
 
